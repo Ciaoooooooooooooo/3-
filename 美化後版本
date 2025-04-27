@@ -1,0 +1,210 @@
+#include <opencv2/opencv.hpp>
+#include <opencv2/core/utils/logger.hpp>
+#include <cmath>
+using namespace cv;
+using namespace std;
+
+Mat frame, canvas;
+int r = 0, g = 0, b = 0;
+int thickness = 3;
+int mode = 0;
+bool drawing = false;
+bool eraser = false;
+bool rainbow = false;
+int brushShape = 0; // 0:圓形 1:星星 2:愛心
+Point prev1(-1, -1);  // 記錄上一次的滑鼠位置
+
+// 畫星星
+void draw_star(Mat& img, Point center, int size, Scalar color) 
+{
+    const int num_points = 5;
+    vector<Point> pts;
+    double angle = CV_PI / 2;
+    for (int i = 0; i < num_points * 2; ++i) 
+    {
+        double rad = (i % 2 == 0) ? size : size / 2.5;
+        pts.push_back(Point(center.x + cos(angle) * rad,center.y - sin(angle) * rad));
+        angle += CV_PI / num_points;
+    }
+    polylines(img, pts, true, color, 2, LINE_AA);
+}
+
+// 畫愛心
+void draw_heart(Mat& img, Point center, int size, Scalar color)
+{
+    int thickness_heart = 2; // 線條粗細（你可以調整）
+
+    // 畫左邊的半圓
+    ellipse(img, Point(center.x - size / 2, center.y),
+        Size(size / 2, size / 2),
+        0, 180, 360, color, thickness_heart, LINE_AA);
+
+    // 畫右邊的半圓
+    ellipse(img, Point(center.x + size / 2, center.y),
+        Size(size / 2, size / 2),
+        0, 180, 360, color, thickness_heart, LINE_AA);
+
+    // 畫下面的三角形
+    line(img, Point(center.x - size / 1, center.y), Point(center.x, center.y + size*1.5), color, thickness_heart, LINE_AA);
+    line(img, Point(center.x + size / 1, center.y), Point(center.x, center.y + size*1.5), color, thickness_heart, LINE_AA);
+}
+
+// 滑鼠繪圖
+void draw(int event, int x, int y, int flags, void*) 
+{
+    if (event == EVENT_LBUTTONDOWN) 
+    {
+        drawing = true;
+        prev1 = Point(x, y);  // 當按下滑鼠時記錄位置
+    }
+    else if (event == EVENT_MOUSEMOVE && drawing) 
+    {
+
+        double dist = sqrt(pow(x - prev1.x, 2) + pow(y - prev1.y, 2));
+        if (dist < 15) return; // 如果滑鼠移動距離太小，就不畫
+
+        Scalar color;
+        if (eraser) 
+        {
+            color = Scalar(0, 0, 0); // 橡皮擦用黑色
+        }
+        else if (rainbow)// 彩虹筆刷 
+        {
+            color = Scalar((x * 5) % 256 + 20, (y * 5) % 256 + 20, ((x + y) * 5) % 256 + 20);
+        }
+        else 
+        {
+            color = Scalar(b, g, r); // 用選擇的顏色
+        }
+
+        if (brushShape == 0)// 圓筆刷 
+        { 
+            line(canvas, prev1, Point(x, y), color, thickness, LINE_AA);
+        }
+        else if (brushShape == 1)// 星星筆刷 
+        { 
+            draw_star(canvas, Point(x, y), thickness * 2, color);
+        }
+        else if (brushShape == 2)// 愛心筆刷 
+        { 
+            draw_heart(canvas, Point(x, y), thickness * 2, color);
+        }
+
+        prev1 = Point(x, y);  // 更新滑鼠位置
+    }
+    else if (event == EVENT_LBUTTONUP) 
+    {
+        drawing = false;  // 當滑鼠放開，停止繪圖
+    }
+}
+
+void on_trackbar(int, void*) 
+{
+    
+}
+
+int main() {
+
+    utils::logging::setLogLevel(utils::logging::LOG_LEVEL_ERROR);
+
+    cout << "\x1b[2J\x1b[1;1H";
+    cout << "用滑鼠在鏡頭畫面上畫畫吧!\n";
+    cout << "C:清空畫布\n";
+    cout << "E:開啟/關閉橡皮擦\n";
+    cout << "R:開啟/關閉彩虹筆刷\n";
+    cout << "B:切換筆刷形狀(圓形->星星->愛心)\n";
+    cout << "S:保存畫作\n";
+    cout << "Esc:離開程式\n";
+
+    VideoCapture cap(0);
+    if (!cap.isOpened()) 
+    {
+        printf("攝影機打不開QQ\n");
+        return -1;
+    }
+
+    namedWindow("Live Painter");
+    createTrackbar("Red", "Live Painter", &r, 255, on_trackbar);
+    createTrackbar("Green", "Live Painter", &g, 255, on_trackbar);
+    createTrackbar("Blue", "Live Painter", &b, 255, on_trackbar);
+    createTrackbar("Thickness", "Live Painter", &thickness, 50, on_trackbar);
+
+    setMouseCallback("Live Painter", draw);
+
+    while (true) 
+    {
+        cap >> frame;
+        if (frame.empty()) break;
+
+        if (canvas.empty()) 
+        {
+            canvas = Mat::zeros(frame.size(), frame.type());
+        }
+
+        Mat display;
+        frame.copyTo(display);
+
+        // 把畫布蓋到畫面上
+        for (int y = 0; y < frame.rows; ++y) 
+        {
+            for (int x = 0; x < frame.cols; ++x) 
+            {
+                Vec3b pix = canvas.at<Vec3b>(y, x);
+                if (pix != Vec3b(0, 0, 0)) 
+                {
+                    display.at<Vec3b>(y, x) = pix;
+                }
+            }
+        }
+
+        imshow("Live Painter", display);
+
+        char key = waitKey(1);
+        if (key == 27) break; // ESC 離開
+        if (key >= '0' && key <= '3') mode = key - '0'; // 濾鏡切換 (這版先保留)
+        if (key == 'c' || key == 'C') 
+        {
+            canvas = Mat::zeros(frame.size(), frame.type()); // 清空畫布
+        }
+        if (key == 'e' || key == 'E') 
+        {
+            eraser = !eraser;
+        }
+        if (key == 'r' || key == 'R') 
+        {
+            rainbow = !rainbow;
+        }
+        if (key == 's' || key == 'S') 
+        {
+            static int save_count = 0;
+
+            // 把攝影畫面與畫布合併
+            Mat final_image = frame.clone();
+            for (int y = 0; y < frame.rows; ++y) 
+            {
+                for (int x = 0; x < frame.cols; ++x) 
+                {
+                    Vec3b pix = canvas.at<Vec3b>(y, x);
+                    if (pix != Vec3b(0, 0, 0)) 
+                    {
+                        final_image.at<Vec3b>(y, x) = pix;
+                    }
+                }
+            }
+
+            imwrite("painting_" + to_string(save_count++) + ".png", final_image);
+            printf("畫作已儲存！\n");
+        }
+        if (key == 'b' || key == 'B') 
+        {
+            brushShape = (brushShape + 1) % 3;
+        }
+    }
+    return 0;
+}
+
+
+    return 0;
+}
+
+
