@@ -1,0 +1,195 @@
+// 你畫我猜 - 彩色筆刷、筆刷形狀、粗細調整、橡皮擦、RGB混色器、濾鏡切換、保存圖片
+
+#include <opencv2/opencv.hpp>
+#include <iostream>
+#include <vector>
+#include <string>
+using namespace cv;
+using namespace std;
+
+// 筆刷設定
+int r = 0, g = 0, b = 0;
+int brush_size = 5;
+bool eraser = false;
+int brush_shape = 0; // 0: circle, 1: star, 2: heart
+
+// 遊戲設定
+vector<Mat> saved_drawings;
+vector<string> guessed_words;
+int num_players = 0;
+int current_player = 0;
+bool drawing_phase = false;
+bool guessing_phase = false;
+bool game_end = false;
+string current_word = "";
+
+// 畫畫用變數
+Mat frame, canvas;
+Point prev(-1, -1);
+bool drawing = false;
+
+// 時間設定
+int timer = 30;
+uint64 start_time;
+
+// 濾鏡設定
+int mode = 0;
+
+void draw_brush(Mat& img, Point center) {
+    Scalar color = eraser ? Scalar(255,255,255) : Scalar(b,g,r);
+    if (brush_shape == 0) {
+        circle(img, center, brush_size, color, FILLED);
+    } else if (brush_shape == 1) {
+        // 簡單星形 (畫五角星簡化版)
+        line(img, center + Point(0, -brush_size), center + Point(brush_size, brush_size), color, 2);
+        line(img, center + Point(0, -brush_size), center + Point(-brush_size, brush_size), color, 2);
+        line(img, center + Point(-brush_size, brush_size), center + Point(brush_size, brush_size), color, 2);
+    } else if (brush_shape == 2) {
+        // 簡單愛心形狀
+        ellipse(img, center + Point(-brush_size/2, 0), Size(brush_size/2, brush_size/2), 0, 0, 360, color, FILLED);
+        ellipse(img, center + Point(brush_size/2, 0), Size(brush_size/2, brush_size/2), 0, 0, 360, color, FILLED);
+        Point pts[1][3];
+        pts[0][0] = center + Point(-brush_size, 0);
+        pts[0][1] = center + Point(0, brush_size);
+        pts[0][2] = center + Point(brush_size, 0);
+        const Point* ppt[1] = { pts[0] };
+        int npt[] = { 3 };
+        fillPoly(img, ppt, npt, 1, color);
+    }
+}
+
+void on_trackbar(int, void*) {
+    // 更新用，不用做事
+}
+
+void mouse_callback(int event, int x, int y, int flags, void*) {
+    if (drawing_phase) {
+        if (event == EVENT_LBUTTONDOWN) {
+            drawing = true;
+            prev = Point(x, y);
+        } else if (event == EVENT_MOUSEMOVE && drawing) {
+            draw_brush(canvas, Point(x, y));
+            prev = Point(x, y);
+        } else if (event == EVENT_LBUTTONUP) {
+            drawing = false;
+        }
+    }
+}
+
+void show_start_screen() {
+    Mat start(500, 800, CV_8UC3, Scalar(255,255,255));
+    putText(start, "Welcome to Pictionary!", Point(50, 200), FONT_HERSHEY_SIMPLEX, 1.5, Scalar(0,0,0), 3);
+    putText(start, "Press any key to start", Point(100, 300), FONT_HERSHEY_SIMPLEX, 1, Scalar(0,0,0), 2);
+    imshow("Pictionary", start);
+    waitKey(0);
+    destroyWindow("Pictionary");
+}
+
+void show_end_screen() {
+    Mat end(500, 800, CV_8UC3, Scalar(255,255,255));
+    putText(end, "Game Over! Thanks for playing!", Point(30, 250), FONT_HERSHEY_SIMPLEX, 1, Scalar(0,0,0), 2);
+    imshow("Pictionary", end);
+    waitKey(0);
+    destroyWindow("Pictionary");
+}
+
+int main() {
+    VideoCapture cap(0);
+    if (!cap.isOpened()) return -1;
+
+    show_start_screen();
+
+    cout << "Enter number of players: ";
+    cin >> num_players;
+
+    namedWindow("Pictionary");
+    createTrackbar("Red", "Pictionary", &r, 255, on_trackbar);
+    createTrackbar("Green", "Pictionary", &g, 255, on_trackbar);
+    createTrackbar("Blue", "Pictionary", &b, 255, on_trackbar);
+    createTrackbar("Brush Size", "Pictionary", &brush_size, 50, on_trackbar);
+
+    setMouseCallback("Pictionary", mouse_callback);
+
+    canvas = Mat::zeros(480, 640, CV_8UC3);
+    canvas.setTo(Scalar(255,255,255));
+
+    cout << "Player " << current_player+1 << ", enter a word: ";
+    cin.ignore();
+    getline(cin, current_word);
+
+    drawing_phase = true;
+    start_time = getTickCount();
+
+    while (true) {
+        cap >> frame;
+        if (frame.empty()) break;
+
+        Mat filtered;
+        switch (mode) {
+            case 1: cvtColor(frame, filtered, COLOR_BGR2GRAY); cvtColor(filtered, filtered, COLOR_GRAY2BGR); break;
+            case 2: GaussianBlur(frame, filtered, Size(9,9), 0); break;
+            case 3: bitwise_not(frame, filtered); break;
+            default: filtered = frame.clone(); break;
+        }
+
+        Mat output;
+        addWeighted(filtered, 1.0, canvas, 1.0, 0, output);
+
+        // 顯示倒數計時
+        if (drawing_phase) {
+            double elapsed = (getTickCount() - start_time) / getTickFrequency();
+            int remaining = max(0, 30 - (int)elapsed);
+            putText(output, to_string(remaining), Point(10,50), FONT_HERSHEY_SIMPLEX, 2, Scalar(0,0,255), 3);
+
+            if (remaining <= 0) {
+                // 時間到，自動儲存
+                saved_drawings.push_back(output.clone());
+                drawing_phase = false;
+                guessing_phase = true;
+                canvas.setTo(Scalar(255,255,255));
+            }
+        }
+
+        imshow("Pictionary", output);
+
+        char key = waitKey(30);
+        if (key == 27) break;
+        if (key >= '0' && key <= '3') mode = key - '0';
+        if (key == 'e') eraser = !eraser;
+        if (key == 's') brush_shape = (brush_shape+1)%3;
+
+        if (!drawing_phase && guessing_phase) {
+            string guess;
+            cout << "Player " << current_player+2 << " guess the word: ";
+            getline(cin, guess);
+            guessed_words.push_back(guess);
+
+            current_player++;
+
+            if (current_player >= num_players-1) {
+                game_end = true;
+                break;
+            } else {
+                cout << "Player " << current_player+1 << ", enter a word: ";
+                getline(cin, current_word);
+                drawing_phase = true;
+                guessing_phase = false;
+                start_time = getTickCount();
+            }
+        }
+    }
+
+    if (game_end) {
+        destroyWindow("Pictionary");
+        for (int i=0; i<saved_drawings.size(); i++) {
+            imshow("Drawing #"+to_string(i+1)+" - Guess: "+guessed_words[i], saved_drawings[i]);
+            waitKey(0);
+        }
+    }
+
+    show_end_screen();
+
+    cap.release();
+    destroyAllWindows();
+    return 0;
+}
