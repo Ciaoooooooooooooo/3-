@@ -1,0 +1,244 @@
+#include <opencv2/opencv.hpp>
+#include <opencv2/core/utils/logger.hpp>
+#include <cmath>
+#include <string>
+#include <vector>
+#include <chrono>
+
+using namespace cv;
+using namespace std;
+
+// 全局變數
+Mat frame, canvas;
+int r = 0, g = 0, b = 0;
+int thickness = 3;
+int mode = 0;
+bool drawing = false;
+bool eraser = false;
+bool rainbow = false;
+int brushShape = 0;
+Point prev1(-1, -1);
+int save_count = 0;
+
+vector<string> saved_images; // 儲存所有玩家的畫作檔案路徑
+string current_topic; // 題目
+
+// 畫星星
+void draw_star(Mat& img, Point center, int size, Scalar color) 
+{
+    const int num_points = 5;
+    vector<Point> pts;
+    double angle = CV_PI / 2;
+    for (int i = 0; i < num_points * 2; ++i) {
+        double rad = (i % 2 == 0) ? size : size / 2.5;
+        pts.push_back(Point(center.x + cos(angle) * rad, center.y - sin(angle) * rad));
+        angle += CV_PI / num_points;
+    }
+    polylines(img, pts, true, color, 2, LINE_AA);
+}
+
+// 畫愛心
+void draw_heart(Mat& img, Point center, int size, Scalar color)
+{
+    int thickness_heart = 2;
+    ellipse(img, Point(center.x - size / 2, center.y),
+        Size(size / 2, size / 2),
+        0, 180, 360, color, thickness_heart, LINE_AA);
+    ellipse(img, Point(center.x + size / 2, center.y),
+        Size(size / 2, size / 2),
+        0, 180, 360, color, thickness_heart, LINE_AA);
+    line(img, Point(center.x - size / 1, center.y), Point(center.x, center.y + size * 1.5), color, thickness_heart, LINE_AA);
+    line(img, Point(center.x + size / 1, center.y), Point(center.x, center.y + size * 1.5), color, thickness_heart, LINE_AA);
+}
+
+// 滑鼠畫畫
+void draw(int event, int x, int y, int flags, void*) 
+{
+    if (event == EVENT_LBUTTONDOWN) 
+    {
+        drawing = true;
+        prev1 = Point(x, y);
+    }
+    else if (event == EVENT_MOUSEMOVE && drawing) 
+    {
+        double dist = sqrt(pow(x - prev1.x, 2) + pow(y - prev1.y, 2));
+        if (dist < 15) return;
+
+        Scalar color;
+        if (eraser) 
+        {
+            color = Scalar(0, 0, 0);
+        }
+        else if (rainbow) 
+        {
+            color = Scalar((x * 5) % 256 + 20, (y * 5) % 256 + 20, ((x + y) * 5) % 256 + 20);
+        }
+        else 
+        {
+            color = Scalar(b, g, r);
+        }
+
+        if (brushShape == 0) 
+        {
+            line(canvas, prev1, Point(x, y), color, thickness, LINE_AA);
+        }
+        else if (brushShape == 1) 
+        {
+            draw_star(canvas, Point(x, y), thickness * 2, color);
+        }
+        else if (brushShape == 2)
+        {
+            draw_heart(canvas, Point(x, y), thickness * 2, color);
+        }
+
+        prev1 = Point(x, y);
+    }
+    else if (event == EVENT_LBUTTONUP) 
+    {
+        drawing = false;
+    }
+}
+
+void on_trackbar(int, void*) {}
+
+void showCountdownAndPaint(VideoCapture& cap, int seconds) 
+{
+    auto start = chrono::steady_clock::now();
+
+    while (true) 
+    {
+        cap >> frame;
+        if (frame.empty()) break;
+
+        if (canvas.empty()) 
+        {
+            canvas = Mat::zeros(frame.size(), frame.type());
+        }
+
+        Mat display;
+        frame.copyTo(display);
+
+        // 濾鏡處理
+        if (mode == 1) cvtColor(display, display, COLOR_BGR2GRAY), cvtColor(display, display, COLOR_GRAY2BGR);
+        else if (mode == 2) GaussianBlur(display, display, Size(9, 9), 0);
+        else if (mode == 3) bitwise_not(display, display);
+
+        // 畫布覆蓋
+        for (int y = 0; y < frame.rows; ++y) 
+        {
+            for (int x = 0; x < frame.cols; ++x) 
+            {
+                Vec3b pix = canvas.at<Vec3b>(y, x);
+                if (pix != Vec3b(0, 0, 0)) 
+                {
+                    display.at<Vec3b>(y, x) = pix;
+                }
+            }
+        }
+
+        // 顯示題目和倒數計時
+        auto now = chrono::steady_clock::now();
+        int elapsed = chrono::duration_cast<chrono::seconds>(now - start).count();
+        int remaining = seconds - elapsed;
+
+        putText(display, "Topic: " + current_topic, Point(10, 30), FONT_HERSHEY_SIMPLEX, 1, Scalar(0, 255, 0), 2);
+        putText(display, "Time Left: " + to_string(remaining) + "s", Point(10, 70), FONT_HERSHEY_SIMPLEX, 1, Scalar(0, 0, 255), 2);
+
+        imshow("Live Painter", display);
+
+        char key = waitKey(1);
+        if (key == 27) exit(0); // ESC直接關程式
+        if (key >= '0' && key <= '3') mode = key - '0';
+        if (key == 'c' || key == 'C') canvas = Mat::zeros(frame.size(), frame.type());
+        if (key == 'e' || key == 'E') eraser = !eraser;
+        if (key == 'r' || key == 'R') rainbow = !rainbow;
+        if (key == 'b' || key == 'B') brushShape = (brushShape + 1) % 3;
+
+        if (remaining <= 0) break;
+    }
+}
+
+void saveCanvasWithFrame(VideoCapture& cap, int player_idx) 
+{
+    Mat final_image = frame.clone();
+
+    if (mode == 1) cvtColor(final_image, final_image, COLOR_BGR2GRAY), cvtColor(final_image, final_image, COLOR_GRAY2BGR);
+    else if (mode == 2) GaussianBlur(final_image, final_image, Size(9, 9), 0);
+    else if (mode == 3) bitwise_not(final_image, final_image);
+
+    for (int y = 0; y < final_image.rows; ++y) 
+    {
+        for (int x = 0; x < final_image.cols; ++x) 
+        {
+            Vec3b pix = canvas.at<Vec3b>(y, x);
+            if (pix != Vec3b(0, 0, 0)) {
+                final_image.at<Vec3b>(y, x) = pix;
+            }
+        }
+    }
+
+    string filename = "player_" + to_string(player_idx) + ".png";
+    imwrite(filename, final_image);
+    saved_images.push_back(filename);
+
+    printf("第%d位玩家的畫作已儲存！\n", player_idx + 1);
+}
+
+int main() 
+{
+    utils::logging::setLogLevel(utils::logging::LOG_LEVEL_ERROR);
+    VideoCapture cap(0);
+    if (!cap.isOpened()) 
+    {
+        printf("攝影機打不開QQ\n");
+        return -1;
+    }
+
+    namedWindow("Live Painter");
+    createTrackbar("Red", "Live Painter", &r, 255, on_trackbar);
+    createTrackbar("Green", "Live Painter", &g, 255, on_trackbar);
+    createTrackbar("Blue", "Live Painter", &b, 255, on_trackbar);
+    createTrackbar("Thickness", "Live Painter", &thickness, 50, on_trackbar);
+    setMouseCallback("Live Painter", draw);
+
+    int player_count;
+    cout << "請輸入玩家人數: ";
+    cin >> player_count;
+    cin.ignore();
+
+    cout << "請出題者就位，並輸入題目: ";
+    getline(cin, current_topic);
+    cout << "\033[2J\033[1;1H";
+
+    for (int i = 0; i < player_count; ++i) 
+    {
+        cout << "\n請第" << i + 1 << "位玩家就位，準備好後按下Enter開始！";
+        cin.get();
+
+        canvas = Mat::zeros(Size(640, 480), CV_8UC3); // 清空畫布
+        showCountdownAndPaint(cap, 30);
+        saveCanvasWithFrame(cap, i);
+    }
+
+    cout << "\n所有玩家畫完囉！按下Enter顯示所有作品讓大家猜～";
+    cin.get();
+
+    // 顯示所有作品
+    for (int i = 0; i < saved_images.size(); ++i) 
+    {
+        Mat img = imread(saved_images[i]);
+        if (!img.empty()) 
+        {
+            imshow("Player " + to_string(i + 1) + "'s Drawing", img);
+        }
+    }
+
+    cout << "當大家猜完後，按下Enter顯示答案！";
+    cin.get();
+
+    cout << "\n正確答案是: " << current_topic << endl;
+    cout << "遊戲結束，感謝遊玩！" << endl;
+
+    waitKey(0);
+    return 0;
+}
