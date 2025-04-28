@@ -1,0 +1,185 @@
+#include <opencv2/opencv.hpp>
+#include <cmath>
+#include <string>
+using namespace cv;
+using namespace std;
+
+// 變數設定
+Mat frame, canvas;
+int r = 0, g = 0, b = 0;
+int thickness = 3;
+int mode = 0;
+bool drawing = false;
+bool eraser = false;
+bool rainbow = false;
+int brushShape = 0; // 0:圓形 1:星星 2:愛心
+Point prev1(-1, -1);
+int save_count = 0;
+
+// 畫星星
+void draw_star(Mat& img, Point center, int size, Scalar color) {
+    const int num_points = 5;
+    vector<Point> pts;
+    double angle = CV_PI / 2;
+    for (int i = 0; i < num_points * 2; ++i) {
+        double rad = (i % 2 == 0) ? size : size / 2.5;
+        pts.push_back(Point(
+            center.x + cos(angle) * rad,
+            center.y - sin(angle) * rad
+        ));
+        angle += CV_PI / num_points;
+    }
+    polylines(img, pts, true, color, 2, LINE_AA);
+}
+
+// 畫愛心
+void draw_heart(Mat& img, Point center, int size, Scalar color) {
+    ellipse(img, Point(center.x - size / 4, center.y), Size(size / 4, size / 4), 0, 0, 360, color, -1);
+    ellipse(img, Point(center.x + size / 4, center.y), Size(size / 4, size / 4), 0, 0, 360, color, -1);
+    vector<Point> triangle = {
+        Point(center.x - size / 2, center.y),
+        Point(center.x + size / 2, center.y),
+        Point(center.x, center.y + size)
+    };
+    fillConvexPoly(img, triangle, color, LINE_AA);
+}
+
+// 滑鼠繪圖
+void draw(int event, int x, int y, int flags, void*) {
+    if (event == EVENT_LBUTTONDOWN) {
+        drawing = true;
+        prev1 = Point(x, y);
+    }
+    else if (event == EVENT_MOUSEMOVE && drawing) {
+        Scalar color;
+        if (eraser) {
+            color = Scalar(0, 0, 0); // 橡皮擦畫黑色（透明畫布）
+        }
+        else if (rainbow) {
+            color = Scalar((x * 5) % 256, (y * 5) % 256, ((x + y) * 5) % 256);
+        }
+        else {
+            color = Scalar(b, g, r);
+        }
+
+        if (brushShape == 0) { // 圓形筆刷
+            line(canvas, prev1, Point(x, y), color, thickness, LINE_AA);
+        }
+        else if (brushShape == 1) { // 星星筆刷
+            draw_star(canvas, Point(x, y), thickness * 2, color);
+        }
+        else if (brushShape == 2) { // 愛心筆刷
+            draw_heart(canvas, Point(x, y), thickness * 2, color);
+        }
+
+        prev1 = Point(x, y);
+    }
+    else if (event == EVENT_LBUTTONUP) {
+        drawing = false;
+    }
+}
+
+// RGB滑桿回調
+void on_trackbar(int, void*) {}
+
+int main() {
+    VideoCapture cap(0);
+    if (!cap.isOpened()) {
+        printf("攝影機無法開啟QQ\n");
+        return -1;
+    }
+
+    namedWindow("Live Painter");
+    createTrackbar("Red", "Live Painter", &r, 255, on_trackbar);
+    createTrackbar("Green", "Live Painter", &g, 255, on_trackbar);
+    createTrackbar("Blue", "Live Painter", &b, 255, on_trackbar);
+    createTrackbar("Thickness", "Live Painter", &thickness, 50, on_trackbar);
+
+    setMouseCallback("Live Painter", draw);
+
+    while (true) {
+        cap >> frame;
+        if (frame.empty()) break;
+
+        if (canvas.empty()) {
+            canvas = Mat::zeros(frame.size(), frame.type());
+        }
+
+        Mat display;
+        frame.copyTo(display);
+
+        // 加上濾鏡
+        if (mode == 1) {
+            cvtColor(display, display, COLOR_BGR2GRAY);
+            cvtColor(display, display, COLOR_GRAY2BGR);
+        }
+        else if (mode == 2) {
+            GaussianBlur(display, display, Size(9, 9), 0);
+        }
+        else if (mode == 3) {
+            bitwise_not(display, display);
+        }
+
+        // 把畫布覆蓋上去
+        for (int y = 0; y < frame.rows; ++y) {
+            for (int x = 0; x < frame.cols; ++x) {
+                Vec3b pix = canvas.at<Vec3b>(y, x);
+                if (pix != Vec3b(0, 0, 0)) {
+                    display.at<Vec3b>(y, x) = pix;
+                }
+            }
+        }
+
+        // 顯示模式資訊
+        string text = "Mode: ";
+        if (mode == 0) text += "Normal";
+        else if (mode == 1) text += "Gray";
+        else if (mode == 2) text += "Blur";
+        else if (mode == 3) text += "Invert";
+
+        string brush = "Brush: ";
+        if (brushShape == 0) brush += "Circle";
+        else if (brushShape == 1) brush += "Star";
+        else if (brushShape == 2) brush += "Heart";
+
+        putText(display, text, Point(10, 30), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(255, 255, 255), 2);
+        putText(display, brush, Point(10, 60), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(255, 255, 255), 2);
+        if (eraser) putText(display, "Eraser ON", Point(10, 90), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 0, 255), 2);
+        if (rainbow) putText(display, "Rainbow Brush", Point(10, 120), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 255, 255), 2);
+
+        imshow("Live Painter", display);
+
+        char key = waitKey(1);
+        if (key == 27) break; // ESC 離開
+        if (key >= '0' && key <= '3') mode = key - '0'; // 0-3切換濾鏡
+        if (key == 'c' || key == 'C') canvas = Mat::zeros(frame.size(), frame.type()); // 清空畫布
+        if (key == 'e' || key == 'E') eraser = !eraser; // 橡皮擦模式
+        if (key == 'r' || key == 'R') rainbow = !rainbow; // 彩虹筆模式
+        if (key == 'b' || key == 'B') brushShape = (brushShape + 1) % 3; // 換筆刷形狀
+        if (key == 's' || key == 'S') {
+            // 儲存攝影加畫作的畫面
+            Mat final_image = frame.clone();
+            if (mode == 1) {
+                cvtColor(final_image, final_image, COLOR_BGR2GRAY);
+                cvtColor(final_image, final_image, COLOR_GRAY2BGR);
+            }
+            else if (mode == 2) {
+                GaussianBlur(final_image, final_image, Size(9, 9), 0);
+            }
+            else if (mode == 3) {
+                bitwise_not(final_image, final_image);
+            }
+            for (int y = 0; y < final_image.rows; ++y) {
+                for (int x = 0; x < final_image.cols; ++x) {
+                    Vec3b pix = canvas.at<Vec3b>(y, x);
+                    if (pix != Vec3b(0, 0, 0)) {
+                        final_image.at<Vec3b>(y, x) = pix;
+                    }
+                }
+            }
+            imwrite("painting_" + to_string(save_count++) + ".png", final_image);
+            printf("畫作已儲存！\n");
+        }
+    }
+    return 0;
+}
